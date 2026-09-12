@@ -285,6 +285,19 @@ if submit:
         'thal': val_or_nan(thal_input),
     }
     
+    # Clinical Guardrail: Check for minimum required parameters
+    provided_count = sum(not pd.isna(v) for v in input_data.values())
+    
+    # Must have at least 3 clinical features and at least Age or Chest Pain or Blood Pressure
+    if provided_count < 3 or (pd.isna(input_data['age']) and pd.isna(input_data['cp']) and pd.isna(input_data['trestbps'])):
+        st.error(
+            "⚠️ **Insufficient Clinical Data:** Cannot generate a medical risk assessment for an empty or unpopulated profile. "
+            "Please provide at least the patient's basic vitals (such as **Age**, **Sex**, **Resting BP**, or **Chest Pain Type**) "
+            "before requesting a prediction."
+        )
+        st.session_state.predicted = False
+        st.stop()
+    
     df_input = pd.DataFrame([input_data])
     
     continuous_features = ['trestbps', 'chol', 'thalach', 'oldpeak']
@@ -293,7 +306,7 @@ if submit:
     
     df_imputed = df_input.copy()
     
-    # Safely impute demographics and chest pain if left as Unknown
+    # Safely impute minor missing fields with population baselines
     if pd.isna(df_imputed.loc[0, 'age']):
         df_imputed.loc[0, 'age'] = 54.0
     if pd.isna(df_imputed.loc[0, 'sex']):
@@ -302,10 +315,8 @@ if submit:
         df_imputed.loc[0, 'cp'] = 4.0
 
     unknown_count = sum(pd.isna(v) for v in input_data.values())
-    if unknown_count == len(input_data):
-        anomalies.append("All inputs were left as 'Unknown'. Baseline population averages were applied.")
-    elif unknown_count > 0:
-        anomalies.append(f"{unknown_count} parameter(s) left as 'Unknown' were dynamically imputed.")
+    if unknown_count > 0:
+        anomalies.append(f"ℹ️ Note: {unknown_count} secondary parameter(s) were left as 'Unknown' and dynamically imputed using clinical standards.")
     st.session_state.anomalies = anomalies
     
     df_imputed[continuous_features] = preprocessors['cont_imputer'].transform(df_input[continuous_features])
