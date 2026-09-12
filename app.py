@@ -60,32 +60,121 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 # Load Models & Artifacts
 # -----------------------------------------------------------------------------
+def _safe_joblib_load(filepath, label):
+    try:
+        return joblib.load(filepath)
+    except ModuleNotFoundError as e:
+        missing = str(e).replace("No module named ", "").strip("'\"")
+        raise RuntimeError(
+            f"Failed to load '{label}' ({filepath}): "
+            f"missing Python module '{missing}'. "
+            f"This usually means the model was trained with a different "
+            f"scikit-learn/numpy version. Try retraining with `python train.py` "
+            f"or update requirements.txt to match training versions."
+        ) from e
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load '{label}' ({filepath}): {type(e).__name__}: {e}. "
+            f"The artifact file may be corrupted or incompatible with the "
+            f"current library versions. Try retraining the models."
+        ) from e
+
+
+def retrain_all_artifacts():
+    try:
+        import importlib
+        train_module = importlib.import_module("train")
+        train_module.main()
+        return True
+    except Exception as e:
+        st.exception(e)
+        return False
+
+
 @st.cache_resource
 def load_artifacts():
+    load_errors = []
+
     try:
         models = {
-            'SVM': joblib.load('svm.joblib'),
-            'Logistic Regression': joblib.load('lr.joblib'),
-            'Gradient Boosting': joblib.load('gb.joblib')
+            'SVM': _safe_joblib_load('svm.joblib', 'SVM model'),
+            'Logistic Regression': _safe_joblib_load('lr.joblib', 'Logistic Regression model'),
+            'Gradient Boosting': _safe_joblib_load('gb.joblib', 'Gradient Boosting model')
         }
+    except Exception as e:
+        models = None
+        load_errors.append(str(e))
+
+    try:
         preprocessors = {
-            'cont_imputer': joblib.load('cont_imputer.joblib'),
-            'cat_imputer': joblib.load('cat_imputer.joblib'),
-            'encoder': joblib.load('encoder.joblib'),
-            'scaler': joblib.load('scaler.joblib'),
-            'feature_names': joblib.load('feature_names.joblib')
+            'cont_imputer': _safe_joblib_load('cont_imputer.joblib', 'continuous imputer'),
+            'cat_imputer': _safe_joblib_load('cat_imputer.joblib', 'categorical imputer'),
+            'encoder': _safe_joblib_load('encoder.joblib', 'one-hot encoder'),
+            'scaler': _safe_joblib_load('scaler.joblib', 'scaler'),
+            'feature_names': _safe_joblib_load('feature_names.joblib', 'feature names')
         }
-        explainer = joblib.load('gb_explainer.joblib')
+    except Exception as e:
+        preprocessors = None
+        load_errors.append(str(e))
+
+    try:
+        explainer = _safe_joblib_load('gb_explainer.joblib', 'SHAP explainer')
+    except Exception as e:
+        explainer = None
+        load_errors.append(str(e))
+
+    metrics = None
+    try:
         with open('metrics.json', 'r') as f:
             metrics = json.load(f)
-        return models, preprocessors, explainer, metrics
     except FileNotFoundError:
-        return None, None, None, None
+        load_errors.append("metrics.json not found.")
+    except Exception as e:
+        load_errors.append(f"metrics.json: {type(e).__name__}: {e}")
 
-models, preprocessors, explainer, metrics = load_artifacts()
+    if models and preprocessors and explainer and metrics:
+        return models, preprocessors, explainer, metrics
 
-if models is None:
-    st.error("Model artifacts not found! Please run `python train.py` first.")
+    return None, None, None, None, load_errors
+
+
+_artifacts = load_artifacts()
+
+if len(_artifacts) == 4:
+    models, preprocessors, explainer, metrics = _artifacts
+    load_errors = []
+else:
+    models, preprocessors, explainer, metrics, load_errors = _artifacts
+
+if models is None or preprocessors is None or explainer is None or metrics is None:
+    st.error("One or more model artifacts could not be loaded.")
+
+    if load_errors:
+        with st.expander("View detailed error(s)", expanded=True):
+            for err in load_errors:
+                st.write(f"- {err}")
+
+    st.write(
+        "This is typically caused by a version mismatch between the environment "
+        "that trained the models and the current environment (scikit-learn, numpy, "
+        "shap, etc.)."
+    )
+
+    if os.path.exists("train.py") and os.path.exists("heart_disease_combined.csv"):
+        if st.button("🔄 Retrain models now (auto-fix)", type="primary"):
+            with st.spinner("Retraining models and regenerating artifacts..."):
+                ok = retrain_all_artifacts()
+            if ok:
+                st.success("Retraining complete! Clearing cache and reloading...")
+                st.cache_resource.clear()
+                st.rerun()
+            else:
+                st.error("Retraining failed. See traceback above.")
+    else:
+        st.info(
+            "Please run `python train.py` locally in your environment to "
+            "regenerate the `.joblib` files and `metrics.json`, then re-deploy."
+        )
     st.stop()
 
 # -----------------------------------------------------------------------------
@@ -303,7 +392,8 @@ if st.session_state.predicted:
     m_res = results[selected_model]
     m_metrics = metrics[selected_model]
     
-    st.markdown(f"**Prediction:** {'Disease Detected' if m_res['pred'] == 1 else 'No Disease'} (Confidence: {m_res['prob']*100:.1f}%)")
+    conf = m_res['prob'] if m_res['pred'] == 1 else (1.0 - m_res['prob'])
+    st.markdown(f"**Prediction:** {'Disease Detected' if m_res['pred'] == 1 else 'No Disease'} (Confidence: {conf*100:.1f}%, Risk: {m_res['prob']*100:.1f}%)")
     
     metrics_df = pd.DataFrame([m_metrics])[["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]]
     st.dataframe(metrics_df.style.format("{:.3f}"))
