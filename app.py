@@ -10,21 +10,30 @@ import seaborn as sns
 import plotly.graph_objects as go
 import google.generativeai as genai
 
-# Configure Gemini
+# Configure Gemini (optional)
 api_key = os.environ.get("GEMINI_API_KEY")
+
+if not api_key:
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        api_key = None
+
+llm_model = None
+
 if api_key:
     genai.configure(api_key=api_key)
-generation_config = {
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 8192,
-    "response_mime_type": "text/plain",
-}
-llm_model = genai.GenerativeModel(
-    model_name="gemini-3.8-flash",
-    generation_config=generation_config,
-)
+    generation_config = {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 64,
+        "max_output_tokens": 8192,
+        "response_mime_type": "text/plain",
+    }
+    llm_model = genai.GenerativeModel(
+        model_name="gemini-3.8-flash",
+        generation_config=generation_config,
+    )
 
 # -----------------------------------------------------------------------------
 # Configuration and CSS
@@ -232,8 +241,14 @@ if submit:
     """
     
     try:
-        response = llm_model.generate_content(prompt)
-        ai_recommendation = response.text
+        if llm_model is None:
+            ai_recommendation = (
+                "AI recommendation is unavailable because no Gemini API key is configured. "
+                "You can still use the prediction dashboard and model results."
+            )
+        else:
+            response = llm_model.generate_content(prompt)
+            ai_recommendation = response.text
     except Exception as e:
         ai_recommendation = f"Unable to generate AI recommendation at this time. Error details: {str(e)}"
     
